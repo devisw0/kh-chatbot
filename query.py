@@ -45,9 +45,7 @@ def get_llm():
     )
     return llm
 
-# --- --- ---
-# 3. MAIN SCRIPT LOGIC (All New Agent Logic)
-# --- --- ---
+
 def main():
     vector_store_path = "my_slide_index"
     
@@ -68,7 +66,7 @@ def main():
         allow_dangerous_deserialization=True 
     )
     
-    # Create the retriever (the "Librarian")
+    # retriver gets top 3 slides
     retriever = vector_store.as_retriever(search_kwargs={"k": 3}) # Finds Top 3
 
     # --- --- ---
@@ -94,14 +92,11 @@ def main():
         # We return both, as shown in the docs
         return serialized_content, retrieved_docs
 
-    # --- --- ---
-    # 3. CREATE THE AGENT (as per your documentation)
-    # --- --- ---
+
     
-    # Create the list of tools the agent can use
     tools = [retrieve_context]
     
-    # Create the system prompt (our "Guardrail")
+
     system_prompt = (
         "You are a helpful assistant for answering questions about a slide deck. "
         "You have access to one tool called 'retrieve_context'.\n"
