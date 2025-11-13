@@ -41,7 +41,7 @@ def get_llm():
     llm = ChatBedrock(
         client=bedrock_client,
         model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        model_kwargs={"temperature": 0.1}
+        model_kwargs={"temperature": 0.3}
     )
     return llm
 
@@ -54,7 +54,7 @@ def main():
         print("Please run `build_index.py` first.")
         return
     
-    # 1. Load your models and vector store
+    #making client instances
     print("Initializing models...")
     embeddings = get_embedding_model()
     llm = get_llm()
@@ -66,13 +66,10 @@ def main():
         allow_dangerous_deserialization=True 
     )
     
-    # retriver gets top 3 slides
-    retriever = vector_store.as_retriever(search_kwargs={"k": 3}) # Finds Top 3
+    #making retriever for vector store
+    retriever = vector_store.as_retriever(search_kwargs={"k": 5}) # Finds Top 5
 
-    # --- --- ---
-    # 2. DEFINE YOUR RAG TOOL (as per your documentation)
-    # We define the tool *inside* main so it can access the 'retriever'
-    # --- --- ---
+    # RAG Tool
     @tool(response_format="content_and_artifact") # From your docs
     def retrieve_context(query: str):
         """
@@ -98,17 +95,22 @@ def main():
     
 
     system_prompt = (
-        "You are a helpful assistant for answering questions about a slide deck. "
-        "You have access to one tool called 'retrieve_context'.\n"
-        
-        "Here are your rules:\n"
-        "1. For general conversation (like 'hello' or 'how are you'), you MUST answer directly without using the tool.\n"
-        "2. For *any* question about the presentation, you MUST use the 'retrieve_context' tool to find the information.\n"
-        "3. The tool will give you 'Content' from the slides. You MUST base your final answer *only* on this 'Content'.\n"
-        "4. If the 'Content' from the tool does not contain the answer, you MUST say 'I'm sorry, that information is not in the slides.' Do not make up an answer."
+    "You are a helpful assistant for answering questions about a slide deck. "
+    "You have access to one tool called 'retrieve_context'.\n"
+    
+    "Here are your rules:\n"
+    "1. For general conversation (like 'hello' or 'how are you'), answer directly without using the tool.\n"
+    "2. For questions about the presentation, use the 'retrieve_context' tool.\n"
+    "3. IMPORTANT: If the user asks about allergies, sensitive skin, or safety:\n"
+    "   - First search with 'allergen safety'\n"
+    "   - If that doesn't give a good answer, try 'sensitive skin dermatological'\n"
+    "   - Then try 'non allergen suitable'\n"
+    "   This helps find information even if the text has unusual spacing.\n"
+    "4. Base your answer ONLY on the retrieved content.\n"
+    "5. If you still can't find the answer after trying different searches, say 'I'm sorry, that information is not in the slides.'"
     )
 
-    # This is the new "factory" function from your docs
+    #creating agent
     agent = create_agent(llm, tools, system_prompt=system_prompt)
 
     print("--- --- ---")
@@ -116,10 +118,10 @@ def main():
     print("Type 'exit' to quit.")
     print("--- --- ---")
 
-    # This list will be our bot's memory
+    
     chat_history = []
 
-# 4. RUN THE CHAT LOOP
+# chat loop
     while True:
         query = input("You: ")
         if query.lower() == 'exit':
@@ -129,10 +131,10 @@ def main():
             
         print("\nThinking...")
         
-        # We must pass the *full* message history to the agent
+        #full chat history
         messages_for_agent = chat_history + [HumanMessage(content=query)]
         
-        # We use .stream() to watch the agent work
+        # .stream instead of invoke to view all steams
         stream_events = agent.stream(
             {"messages": messages_for_agent},
             stream_mode="values",
@@ -145,9 +147,7 @@ def main():
         for event in stream_events:
             last_message = event["messages"][-1]
             
-            # --- --- ---
-            # NEW, SAFER CHECKS using .type
-            # --- --- ---
+        
             
             # Check if the last message is an AI message and has tool calls
             if last_message.type == "ai" and last_message.tool_calls:
@@ -173,7 +173,7 @@ def main():
         else:
             print("\n(No sources used for this response.)\n")
 
-        # Update our manual chat history
+        # updating chat history
         chat_history.append(HumanMessage(content=query))
         chat_history.append(AIMessage(content=final_answer))
 
