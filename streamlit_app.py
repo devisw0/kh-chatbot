@@ -72,7 +72,7 @@ if "agent" not in st.session_state:
             allow_dangerous_deserialization=True 
         )
         
-        retriever = vector_store.as_retriever(search_kwargs={"k": 3})
+        retriever = vector_store.as_retriever(search_kwargs={"k": 5})
         
         # Define the RAG tool
         @tool(response_format="content_and_artifact")
