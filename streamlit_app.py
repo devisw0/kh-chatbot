@@ -87,29 +87,33 @@ if "agent" not in st.session_state:
                 f"Source Slide: {doc.metadata.get('slide_number', 'N/A')}\nContent: {doc.page_content}"
                 for doc in retrieved_docs
             )
-            
+           
             return serialized_content, retrieved_docs
         
         tools = [retrieve_context]
         
         system_prompt = (
-            "You are a helpful assistant for answering questions about a slide deck. "
-            "You have access to one tool called 'retrieve_context'.\n"
-            
-            "Here are your rules:\n"
-            "1. For general conversation (like 'hello' or 'how are you'), you MUST answer directly without using the tool.\n"
-            "2. For *any* question about the presentation, you MUST use the 'retrieve_context' tool to find the information.\n"
-            "3. The tool will give you 'Content' from the slides. You MUST base your final answer *only* on this 'Content'.\n"
-            "4. If the 'Content' from the tool does not contain the answer, you MUST say 'I'm sorry, that information is not in the slides.' Do not make up an answer."
-        )
+    "You are a helpful assistant for answering questions about a slide deck. "
+    "You have access to one tool called 'retrieve_context'.\n"
+    
+    "Here are your rules:\n"
+    "1. For general conversation (like 'hello' or 'how are you'), answer directly without using the tool.\n"
+    "2. For questions about the presentation, use the 'retrieve_context' tool.\n"
+    "3. IMPORTANT: If the user asks about allergies, sensitive skin, or safety:\n"
+    "   - First search with 'allergen safety'\n"
+    "   - If that doesn't give a good answer, try 'sensitive skin dermatological'\n"
+    "   - Then try 'non allergen suitable'\n"
+    "   This helps find information even if the text has unusual spacing.\n"
+    "4. Base your answer ONLY on the retrieved content.\n"
+    "5. If you still can't find the answer after trying different searches, say 'I'm sorry, that information is not in the slides.'"
+    )
         
         st.session_state.agent = create_agent(llm, tools, system_prompt=system_prompt)
     
     st.success("Chatbot initialized! Ask me anything about the slides.")
 
-# --- --- ---
-# DISPLAY CHAT HISTORY
-# --- --- ---
+
+#chat history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -117,9 +121,7 @@ for message in st.session_state.messages:
             with st.expander("📄 View Sources"):
                 st.write(f"Slide Numbers: {message['sources']}")
 
-# --- --- ---
-# CHAT INPUT
-# --- --- ---
+#chat input
 if prompt := st.chat_input("Ask a question about the slides..."):
     # Add user message to chat history
     st.session_state.messages.append({"role": "user", "content": prompt})
