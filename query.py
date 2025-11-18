@@ -1,21 +1,18 @@
 import boto3
 from langchain_aws import BedrockEmbeddings
-from langchain_aws.chat_models import ChatBedrock # This is correct
+from langchain_aws.chat_models import ChatBedrock 
 from langchain_community.vectorstores import FAISS
 import os
 
 # --- --- ---
 # NEW IMPORTS (from the docs you sent)
 # --- --- ---
-from langchain.tools import tool # The tool decorator
-from langchain.agents import create_agent # The new agent factory
+from langchain.tools import tool
+from langchain.agents import create_agent 
 from langchain_core.messages import HumanMessage, AIMessage
 
-# (We no longer need any 'langchain.chains' imports)
 
-# --- --- ---
-# 1. SET UP THE EMBEDDING MODEL (Unchanged)
-# --- --- ---
+
 def get_embedding_model():
     """Sets up the AWS Bedrock client for the Titan V2 embedding model."""
     session = boto3.Session(
