@@ -19,7 +19,7 @@ from langchain_core.documents import Document
 # Suppress warnings for cleaner UI
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# --- CONFIGURATION ---
+# Config 
 INDEX_PATH = "my_slide_index"
 CSV_OUTPUT = "extracted_content.csv"  # Optional: Save extraction to CSV
 CLAUDE_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
@@ -28,7 +28,7 @@ AWS_PROFILE = "devan2"
 AWS_REGION = "us-east-1"
 TOP_K = 7  # Retrieve top 7 slides
 
-# --- HELPER FUNCTIONS ---
+# Helper Functions 
 
 def get_session():
     """Returns an authenticated boto3 session."""
@@ -49,11 +49,11 @@ def get_llm(_session):
     client = ChatBedrock(
         client=_session.client('bedrock-runtime'),
         model_id=CLAUDE_MODEL_ID,
-        model_kwargs={"temperature": 0.1}
+        model_kwargs={"temperature": 0.2}
     )
     return client
 
-# --- TEXT EXTRACTION ---
+# Text Extraction   
 
 def extract_text_from_pdf_ocr(pdf_path: str):
     """Extracts text (digital + OCR) from a single PDF."""
@@ -87,7 +87,7 @@ def extract_text_from_pdf_ocr(pdf_path: str):
         
     return slide_data
 
-# --- KEYWORD EXTRACTION FOR BETTER RETRIEVAL ---
+# Keyword extraction and appending to slide contents
 
 def extract_keywords(text: str):
     """Extract important keywords to improve semantic search."""
@@ -106,6 +106,7 @@ def extract_keywords(text: str):
         'citrus': ['citrus', 'lemon', 'orange', 'bergamot', 'grapefruit'],
         'fresh': ['fresh', 'clean', 'aquatic', 'marine'],
         'spicy': ['spicy', 'spice', 'pepper', 'cinnamon', 'ginger'],
+        'made by':['created by', 'created', 'made', 'made by', 'invented']
     }
     
     for category, terms in patterns.items():
@@ -116,7 +117,8 @@ def extract_keywords(text: str):
     
     return keywords
 
-# --- INDEXING PIPELINE ---
+
+#  Indexing from the uploaded files
 
 def build_index_from_uploaded_files(uploaded_files, embedding_model):
     """
@@ -129,11 +131,11 @@ def build_index_from_uploaded_files(uploaded_files, embedding_model):
     6. Optionally save to CSV
     """
     all_extracted_data = []
-    
+   
     with tempfile.TemporaryDirectory() as temp_dir:
-        # --- STEP 1: Extract text from all PDFs ---
+        
         for uploaded_file in uploaded_files:
-            st.info(f"📄 Processing: {uploaded_file.name}")
+            st.info(f"Processing: {uploaded_file.name}")
             
             # Save uploaded file temporarily
             temp_path = os.path.join(temp_dir, uploaded_file.name)
@@ -142,24 +144,37 @@ def build_index_from_uploaded_files(uploaded_files, embedding_model):
             
             # Extract text/OCR
             extracted_text = extract_text_from_pdf_ocr(temp_path)
-            st.success(f"✅ Extracted {len(extracted_text)} slides from {uploaded_file.name}")
+            st.success(f"Extracted {len(extracted_text)} slides from {uploaded_file.name}")
             
             all_extracted_data.extend(extracted_text)
 
-        # --- Check if extraction worked ---
+        # Check if extraction worked
         if not all_extracted_data:
-            st.error("❌ No content extracted from PDFs. Check your files.")
+            st.error("No content extracted from PDFs. Check your files.")
             return None
         
-        st.success(f"📊 Total slides extracted: {len(all_extracted_data)}")
+        st.success(f"Total slides extracted: {len(all_extracted_data)}")
 
-        # --- STEP 2: Save to CSV (optional, for inspection) ---
+        # Save to CSV
         df = pd.DataFrame(all_extracted_data)
         df.to_csv(CSV_OUTPUT, index=False)
-        st.success(f"💾 Saved extraction to {CSV_OUTPUT}")
+        st.success(f"Saved extraction to {CSV_OUTPUT}")
 
-        # --- STEP 3: Convert to LangChain Documents with keyword enhancement ---
-        st.info("🔧 Creating embeddings and building search index...")
+        # Show preview (FIXED INDENTATION)
+        with st.expander("👁️ Preview Extracted Content"):
+            st.dataframe(df)
+
+        # Download button (FIXED INDENTATION)
+        csv_data = df.to_csv(index=False)
+        st.download_button(
+            label="Download CSV",
+            data=csv_data,
+            file_name="extracted_content.csv",
+            mime="text/csv"
+        )
+        
+        # Creating embeddings
+        st.info("Creating embeddings and building search index...")
         documents = []
         
         for item in all_extracted_data:
@@ -181,18 +196,17 @@ def build_index_from_uploaded_files(uploaded_files, embedding_model):
                 }
             )
             documents.append(doc)
-        
-        # --- STEP 4: Build FAISS vector store ---
+       
+        # Faiss store
         vector_store = FAISS.from_documents(documents, embedding_model)
         
-        # --- STEP 5: Save to disk ---
+        # Save local
         vector_store.save_local(INDEX_PATH)
-        st.success(f"✅ Index built and saved to {INDEX_PATH}")
+        st.success(f"Index built and saved to {INDEX_PATH}")
         
         return vector_store
 
-# --- AGENT CREATION ---
-
+# Agent
 def create_rag_agent(llm, vector_store):
     """Creates the RAG agent with improved search capabilities."""
     
@@ -206,9 +220,9 @@ def create_rag_agent(llm, vector_store):
         """
         retrieved_docs = retriever.invoke(query)
         
-        # Format content for the LLM
+        # Format content for LLM
         serialized_content = "\n\n".join(
-            f"📄 Source: {doc.metadata.get('document_source', 'N/A')} | Slide: {doc.metadata.get('slide_number', 'N/A')}\n"
+            f"Source: {doc.metadata.get('document_source', 'N/A')} | Slide: {doc.metadata.get('slide_number', 'N/A')}\n"
             f"Content: {doc.page_content}"
             for doc in retrieved_docs
         )
@@ -217,7 +231,7 @@ def create_rag_agent(llm, vector_store):
 
     tools = [retrieve_context]
     
-    # Improved system prompt
+    # System prompt
     system_prompt = (
         "You are a helpful assistant for answering questions about uploaded documents. "
         "You have access to the 'retrieve_context' tool to search the knowledge base.\n\n"
@@ -232,7 +246,6 @@ def create_rag_agent(llm, vector_store):
 
     return create_agent(llm, tools, system_prompt=system_prompt)
 
-# --- STREAMLIT UI ---
 
 st.set_page_config(
     page_title="Multi-Document RAG Chatbot",
@@ -253,11 +266,11 @@ llm = get_llm(session)
 embeddings = get_embedding_model(session)
 
 # Create tabs
-chat_tab, manage_tab = st.tabs(["💬 Chat", "⚙️ Manage Documents"])
+chat_tab, manage_tab = st.tabs(["Chat", "Manage Documents"])
 
-# --- DOCUMENT MANAGEMENT TAB ---
+# Document Management
 with manage_tab:
-    st.header("📤 Upload and Index Documents")
+    st.header("Upload and Index Documents")
     
     uploaded_files = st.file_uploader(
         "Choose PDF files", 
@@ -267,9 +280,9 @@ with manage_tab:
     
     if st.button("🔨 Build/Rebuild Search Index", type="primary"):
         if not uploaded_files:
-            st.error("⚠️ Please upload at least one PDF file.")
+            st.error("Please upload at least one PDF file.")
         else:
-            with st.spinner("🔄 Building index... This may take a minute for large files."):
+            with st.spinner("Building index... This may take a minute for large files."):
                 
                 # Build the index
                 vector_store = build_index_from_uploaded_files(uploaded_files, embeddings)
@@ -280,46 +293,46 @@ with manage_tab:
                     st.session_state.agent = create_rag_agent(llm, vector_store)
                     
                     st.balloons()
-                    st.success(f"🎉 Success! Indexed {len(vector_store.docstore._dict)} slides.")
+                    st.success(f"Success! Indexed {len(vector_store.docstore._dict)} slides.")
                 else:
-                    st.error("❌ Indexing failed. Check the error messages above.")
+                    st.error("Indexing failed. Check the error messages above.")
     
     # Show current index status
     if os.path.exists(INDEX_PATH):
-        st.info(f"📂 Existing index found at `{INDEX_PATH}`")
+        st.info(f"Existing index found at `{INDEX_PATH}`")
     else:
-        st.warning("⚠️ No index found. Please upload files and build the index.")
+        st.warning("No index found. Please upload files and build the index.")
 
-# --- CHAT TAB ---
+# Chat
 with chat_tab:
     
     # Check if index exists
     if not os.path.exists(INDEX_PATH):
-        st.warning("⚠️ No search index found. Go to 'Manage Documents' tab to upload and index your PDFs.")
+        st.warning("No search index found. Go to 'Manage Documents' tab to upload and index your PDFs.")
         st.stop()
     
     # Load agent if not already loaded
     if "agent" not in st.session_state:
-        with st.spinner("Loading search index..."):
+        with st.spinner("Loading search index"):
             st.session_state.vector_store = FAISS.load_local(
                 INDEX_PATH, 
                 embeddings, 
                 allow_dangerous_deserialization=True
             )
             st.session_state.agent = create_rag_agent(llm, st.session_state.vector_store)
-        st.success("✅ Ready to answer questions!")
+        st.success("Ready to answer questions!")
     
     # Display chat history
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             if "sources" in message and message["sources"]:
-                with st.expander("📄 View Sources"):
+                with st.expander("View Sources"):
                     for source in message["sources"]:
                         st.write(f"• {source}")
     
     # Chat input
-    if prompt := st.chat_input("Ask a question about your documents..."):
+    if prompt := st.chat_input("Ask a question about your documents"):
         
         # Add user message
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -329,7 +342,7 @@ with chat_tab:
         
         # Get agent response
         with st.chat_message("assistant"):
-            with st.spinner("🤔 Searching documents..."):
+            with st.spinner("Searching documents"):
                 
                 # Convert history to LangChain messages
                 chat_history = []
@@ -371,7 +384,7 @@ with chat_tab:
 ]
                 source_list = sorted(list(set(source_list)))
                 
-                with st.expander("📄 View Sources"):
+                with st.expander("View Sources"):
                     for source in source_list:
                         st.write(f"• {source}")
             
@@ -382,9 +395,9 @@ with chat_tab:
                 "sources": source_list
             })
 
-# --- SIDEBAR ---
+# Sidebar 
 with st.sidebar:
-    st.header("ℹ️ About")
+    st.header("About")
     st.markdown("""
     This chatbot uses:
     - **AWS Bedrock** (Claude Sonnet 4.5 & Titan Embeddings)
@@ -395,7 +408,7 @@ with st.sidebar:
     
     st.divider()
    
-    if st.button("🗑️ Clear Chat History"):
+    if st.button("Clear Chat History"):
         st.session_state.messages = []
         st.rerun()
     
