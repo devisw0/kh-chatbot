@@ -7,6 +7,7 @@ import tempfile
 import pytesseract
 from PIL import Image
 import warnings
+import re
 
 from langchain_aws import BedrockEmbeddings
 from langchain_aws.chat_models import ChatBedrock
@@ -56,8 +57,9 @@ def get_llm(_session):
 # Text Extraction   
 
 def extract_text_from_pdf_ocr(pdf_path: str):
-    """Extracts text (digital + OCR) from a single PDF."""
     import pdfplumber
+    from PIL import ImageEnhance, ImageFilter
+    import re
     
     slide_data = []
     source_filename = os.path.basename(pdf_path)
@@ -67,20 +69,68 @@ def extract_text_from_pdf_ocr(pdf_path: str):
             for i, page in enumerate(pdf.pages, start=1):
                 digital_text = page.extract_text()
                 text = ""
+                
+                # Check if text is just watermark
+                is_only_watermark = (
+                    digital_text and 
+                    digital_text.strip().lower() in ['confidential', 'draft', 'internal']
+                )
 
-                if digital_text and digital_text.strip():
+                # Use digital text ONLY if it's real content
+                if digital_text and digital_text.strip() and not is_only_watermark:
                     text = digital_text.strip()
                 else:
-                    # Fallback to OCR for image-based slides
-                    img = page.to_image(resolution=300).original
-                    text = pytesseract.image_to_string(img, lang='eng').strip()
+                    # Enhanced OCR with better preprocessing
+                    img = page.to_image(resolution=450).original 
+                   
+                    # Convert to grayscale
+                    img = img.convert('L')
+                    
+                    # Increase contrast MORE
+                    enhancer = ImageEnhance.Contrast(img)
+                    img = enhancer.enhance(2.0)  # ← Stronger contrast
+                    
+                    # Increase sharpness
+                    enhancer = ImageEnhance.Sharpness(img)
+                    img = enhancer.enhance(2.0)
+                    
+                    # Apply threshold to make text pure black/white
+                    import numpy as np
+                    img_array = np.array(img)
+                    threshold = 128
+                    img_array = np.where(img_array > threshold, 255, 0).astype(np.uint8)
+                    img = Image.fromarray(img_array)
+                    
+                    # Try different OCR config (page segmentation mode 3 = fully automatic)
+                    custom_config = r'--oem 3 --psm 3'  # ← Changed from psm 6
+                    text = pytesseract.image_to_string(
+                        img, 
+                        lang='eng',
+                        config=custom_config
+                    ).strip()
+                    
+                    # Remove watermarks (case-insensitive)
+                    text = re.sub(r'\bconfidential\b', '', text, flags=re.IGNORECASE)
+                    text = re.sub(r'\bdraft\b', '', text, flags=re.IGNORECASE)
+                    text = re.sub(r'\binternal\b', '', text, flags=re.IGNORECASE)
+                    
+                    # Remove common OCR artifacts
+                    text = re.sub(r'[^\x00-\x7F]+', ' ', text)  # Remove non-ASCII
+                    text = re.sub(r'[}{|\\<>]', '', text)  # Remove special chars
+                    text = re.sub(r'\s+', ' ', text)  # Collapse whitespace
+                    text = text.strip()
 
-                if text:
+                # LOWER threshold! (was 30, now 10)
+                if text and len(text) > 10:  # ← More lenient!
                     slide_data.append({
                         "DocumentSource": source_filename,
                         "SlideNumber": i,
                         "Content": text
                     })
+                    st.success(f"✅ Slide {i}: Extracted {len(text)} characters")
+                else:
+                    st.warning(f"⚠️ Slide {i}: Only '{text[:100]}' (skipped)")
+                    
     except Exception as e:
         st.error(f"Error during OCR for {source_filename}: {e}")
         return []
@@ -196,7 +246,7 @@ def build_index_from_uploaded_files(uploaded_files, embedding_model):
                 }
             )
             documents.append(doc)
-       
+      
         # Faiss store
         vector_store = FAISS.from_documents(documents, embedding_model)
         
@@ -387,7 +437,7 @@ with chat_tab:
                 with st.expander("View Sources"):
                     for source in source_list:
                         st.write(f"• {source}")
-            
+           
             # Save to history
             st.session_state.messages.append({
                 "role": "assistant",
