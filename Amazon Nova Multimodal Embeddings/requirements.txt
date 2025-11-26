@@ -1,0 +1,11 @@
+streamlit
+pdfplumber
+pymupdf
+pytesseract
+Pillow
+boto3
+langchain
+langchain-aws
+langchain-community
+faiss-cpu
+numpy
