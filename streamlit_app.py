@@ -17,6 +17,9 @@ from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.documents import Document
 
+import pymupdf
+import fitz
+
 # Suppress warnings for cleaner UI
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -166,6 +169,48 @@ def extract_keywords(text: str):
                 break
     
     return keywords
+
+
+
+def check_for_confidential(path):
+   document = fitz.open(path)
+
+   for page in document:
+        digital_text = page.get_text('dict', flags = 11)
+
+        #{
+        #     "width": 300.0,
+        #     "height": 350.0,
+        #     "blocks": [{
+        #         "type": 0,
+        #         "bbox": (50.0, 88.17500305175781, 166.1709747314453, 103.28900146484375),
+        #         "lines": ({
+        #             "wmode": 0,
+        #             "dir": (1.0, 0.0),
+        #             "bbox": (50.0, 88.17500305175781, 166.1709747314453, 103.28900146484375),
+        #             "spans": ({
+        #                 "size": 11.0,
+        #                 "flags": 0,
+        #                 "font": "Helvetica",
+        #                 "color": 0,
+        #                 "origin": (50.0, 100.0),
+        #                 "text": "Some text on first page.",
+        #                 "bbox": (50.0, 88.17500305175781, 166.1709747314453, 103.28900146484375)
+        #             })
+        #         }]
+        #     }]
+        # }
+
+        text_blocks = digital_text['blocks']
+
+        for block in text_blocks:
+            #0 = digital text, 1 = image
+            if block['type'] == 0:
+
+                #lines is a list containing dictionary objects within the blocks list (which also contians dictionary objects)
+                line_list = block['lines']
+                
+                for line_info in line_list:
 
 
 #  Indexing from the uploaded files
@@ -333,7 +378,7 @@ with manage_tab:
             st.error("Please upload at least one PDF file.")
         else:
             with st.spinner("Building index... This may take a minute for large files."):
-                
+               
                 # Build the index
                 vector_store = build_index_from_uploaded_files(uploaded_files, embeddings)
                 
@@ -341,7 +386,7 @@ with manage_tab:
                     # Create new agent with the updated index
                     st.session_state.vector_store = vector_store
                     st.session_state.agent = create_rag_agent(llm, vector_store)
-                    
+                   
                     st.balloons()
                     st.success(f"Success! Indexed {len(vector_store.docstore._dict)} slides.")
                 else:
