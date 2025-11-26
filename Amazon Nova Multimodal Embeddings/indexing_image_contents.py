@@ -18,6 +18,7 @@ import json
 import faiss
 from langchain_community.docstore.in_memory import InMemoryDocstore
 from langchain_core.documents import Document
+import pymupdf
 
 PROFILE_NAME = "devan2"
 REGION_NAME = "us-east-1"
@@ -212,10 +213,11 @@ def create_dual_vector_stores(text_data_list, image_data_list):
 
     if image_data_list:
         if image_vectors:
-            #making matrix
+            #making matrix for FAISS library
             dimensions_image_embeddings = 3072
             index = faiss.IndexFlatL2(dimensions_image_embeddings)
 
+            #already have mebeddings, index for it is used for size + method, docstore is to create empty storage in RAM, index_to_docstore_id is to keep the indexes empty
             image_vector_store = FAISS(embedding_function=None, index = index, docstore=InMemoryDocstore(), index_to_docstore_id={})
 
             image_vector_store.add_embeddings(
@@ -228,3 +230,10 @@ def create_dual_vector_stores(text_data_list, image_data_list):
             image_vector_store.save_local("experiment/my_image_index")
             print("Visual Index saved to 'experiment/my_image_index'")
             
+
+# def check_pdf_for_violation(pdf_path) -> bool:
+#     document = pymupdf.open(pdf_path)
+
+#     for page in document:
+#         data = page.get_text('dict', flags=11)
+
