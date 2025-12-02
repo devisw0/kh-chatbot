@@ -45,7 +45,7 @@ def convert_pdf_pages_to_text_and_images(path, slide_show_name):
 
         #will be using for image text
         # loaded_page = document.load_page(page)
-        loaded_page_pix_map = page_obj.get_pixmap(dpi=300)
+        loaded_page_pix_map = page_obj.get_pixmap(dpi=140)
 
         # loaded_page_pix_map.save(f"{output_folder}/{slide_show_name}_slide_{page+1}.png")
         #converting our pixmap to bytes, pixmap not usable to aws, or pillow
@@ -329,7 +329,7 @@ def load_vector_stores():
     return text_store, image_store
 
 
-def query_text_index(text_store, query, k=7):
+def query_text_index(text_store, query, k=2):
     """
     Query the text FAISS index and return results with similarity scores.
     Returns list of tuples: (Document, distance_score)
@@ -342,7 +342,7 @@ def query_text_index(text_store, query, k=7):
     return results
 
 
-def query_image_index(image_store, query, k=7):
+def query_image_index(image_store, query, k=2):
     """
     Query the image FAISS index using text query.
     Converts text to multimodal embedding first.
@@ -387,10 +387,11 @@ def distance_to_similarity_percentage(distance):
     return min(100, max(0, similarity))
 
 
-def get_claude_response(query, context, retrieval_type):
+def get_claude_response(query, context, retrieval_type, image_results=None):
     """
     Generate Claude response using retrieved context.
     retrieval_type: 'text' or 'image' to customize the prompt
+    image_results: list of (Document, score) tuples with image_bytes in metadata
     """
     session = boto3.Session(profile_name=PROFILE_NAME, region_name=REGION_NAME)
     bedrock_client = session.client('bedrock-runtime')
@@ -400,19 +401,14 @@ def get_claude_response(query, context, retrieval_type):
         system_prompt = """You are a helpful assistant analyzing presentation slides. 
 You have been given text content extracted from slides (both digital text and OCR from images).
 Answer the user's question based on this text content. Be specific and cite slide numbers when relevant."""
-    else:  # image
-        system_prompt = """You are a helpful assistant analyzing presentation slides.
-You have been given information about slides based on their visual content and layout.
-Answer the user's question based on the visual information provided. Be specific and cite slide numbers when relevant."""
-    
-    prompt = f"""Context from slides:
+        
+        prompt = f"""Context from slides:
 {context}
 
 User question: {query}
 
 Please provide a helpful answer based on the context above."""
-    
-    try:
+        
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 2000,
@@ -424,9 +420,56 @@ Please provide a helpful answer based on the context above."""
                 }
             ]
         })
-       
+        
+    else:  # image retrieval - send actual images
+        system_prompt = """You are a helpful assistant analyzing presentation slides.
+You have been given the actual slide images to analyze visually.
+Answer the user's question based on what you see in these slides. Be specific and cite slide numbers when relevant."""
+        
+        # Build content array with images
+        content = []
+        
+        # Add the query first
+        content.append({
+            "type": "text",
+            "text": f"Please analyze these slides and answer: {query}"
+        })
+        
+        # Add each retrieved slide image
+        if image_results:
+            for doc, score in image_results:
+                content.append({
+                    "type": "text",
+                    "text": f"\nSlide {doc.metadata['slide_number']} from {doc.metadata['source']}:"
+                })
+                
+                # Add the actual image
+                if 'image_bytes' in doc.metadata:
+                    image_base64 = base64.b64encode(doc.metadata['image_bytes']).decode('utf-8')
+                    content.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": image_base64
+                        }
+                    })
+        
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 2000,
+            "system": system_prompt,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": content
+                }
+            ]
+        })
+    
+    try:
         response = bedrock_client.invoke_model(
-            modelId="anthropic.claude-sonnet-4-20250514-v1:0",
+            modelId="us.anthropic.claude-sonnet-4-20250514-v1:0",
             body=body
         )
         
@@ -438,7 +481,7 @@ Please provide a helpful answer based on the context above."""
         return f"Error generating response: {str(e)}"
 
 
-def get_combined_claude_response(query, text_context, image_context):
+def get_combined_claude_response(query, text_context, image_context, image_results=None):
     """
     Generate single Claude response using both text and image contexts combined.
     """
@@ -446,21 +489,44 @@ def get_combined_claude_response(query, text_context, image_context):
     bedrock_client = session.client('bedrock-runtime')
     
     system_prompt = """You are a helpful assistant analyzing presentation slides.
-You have been given context from two sources:
-1. Text content (digital text + OCR) from slides
-2. Visual/layout information from slides
-
+You have been given both text content (digital text + OCR) AND the actual slide images.
 Synthesize information from both sources to provide a comprehensive answer. Be specific and cite slide numbers when relevant."""
     
-    prompt = f"""Text-based context:
-{text_context}
+    # Build content array with both text and images
+    content = []
+    
+    # Add the query
+    content.append({
+        "type": "text",
+        "text": f"""Please analyze these slides using both the extracted text and visual content to answer: {query}
 
-Visual-based context:
-{image_context}
-
-User question: {query}
-
-Please provide a helpful answer based on all the context above."""
+Text content from slides:
+{text_context}"""
+    })
+    
+    # Add the actual slide images
+    if image_results:
+        content.append({
+            "type": "text",
+            "text": "\nSlide images for visual analysis:"
+        })
+        
+        for doc, score in image_results:
+            content.append({
+                "type": "text",
+                "text": f"\nSlide {doc.metadata['slide_number']} from {doc.metadata['source']}:"
+            })
+            
+            if 'image_bytes' in doc.metadata:
+                image_base64 = base64.b64encode(doc.metadata['image_bytes']).decode('utf-8')
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": image_base64
+                    }
+                })
     
     try:
         body = json.dumps({
@@ -470,13 +536,13 @@ Please provide a helpful answer based on all the context above."""
             "messages": [
                 {
                     "role": "user",
-                    "content": prompt
+                    "content": content
                 }
             ]
         })
         
         response = bedrock_client.invoke_model(
-            modelId="anthropic.claude-sonnet-4-5-20250929-v1:0",
+            modelId="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             body=body
         )
         
@@ -486,8 +552,7 @@ Please provide a helpful answer based on all the context above."""
         
     except Exception as e:
         return f"Error generating response: {str(e)}"
-
-
+    
 # def check_pdf_for_violation(pdf_path) -> bool:
 #     document = pymupdf.open(pdf_path)
 
@@ -686,8 +751,8 @@ def main():
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 # Query both indexes
-                text_results = query_text_index(st.session_state.text_store, user_query, k=7)
-                image_results = query_image_index(st.session_state.image_store, user_query, k=7)
+                text_results = query_text_index(st.session_state.text_store, user_query, k=2)
+                image_results = query_image_index(st.session_state.image_store, user_query, k=2)
                 
                 if st.session_state.comparison_mode:
                     # Comparison mode - two separate responses
@@ -718,7 +783,7 @@ def main():
                             f"Slide {doc.metadata['slide_number']} from {doc.metadata['source']}"
                             for doc, _ in image_results
                         ])
-                        image_response = get_claude_response(user_query, image_context, 'image')
+                        image_response = get_claude_response(user_query, image_context, 'image', image_results=image_results)
                         st.markdown(image_response)
                         
                         if image_results:
@@ -754,8 +819,8 @@ def main():
                         f"Slide {doc.metadata['slide_number']} from {doc.metadata['source']}"
                         for doc, _ in image_results
                     ])
-                    
-                    combined_response = get_combined_claude_response(user_query, text_context, image_context)
+                   
+                    combined_response = get_combined_claude_response(user_query, text_context, image_context, image_results=image_results)
                     st.markdown(combined_response)
                     
                     # Save to history
