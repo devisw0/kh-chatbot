@@ -51,12 +51,12 @@ def convert_pdf_pages_to_text_and_images(path, slide_show_name):
         #converting our pixmap to bytes, pixmap not usable to aws, or pillow
         picture_in_bytes = loaded_page_pix_map.tobytes('png')
 
-        #aws requires json format and we cannot send raw binary 0s and 1s in JSON
+        #aws requires json format and we cant send raw binary 0s and 1s in JSON
         #base64 allows us to convert the binary into into a byte string
-        #then we encode with utf-8 in a format we can use for our AWS model
+        #and then we encode with utf-8 in a format we can use for the AWS model, no loss
         encoded_bytes = base64.b64encode(picture_in_bytes).decode('utf-8')
 
-        #now we also need to save the actual image file (not bytes) into our RAM for streamlit
+        #now we also need to save the actual image file (not bytes) into RAM for streamlit
         saved_image = io.BytesIO(picture_in_bytes)
 
         #appending the image info to list of dicts
@@ -233,7 +233,7 @@ def create_dual_vector_stores(text_data_list, image_data_list):
         text_embedding_model = get_text_embedding_model()
 
         # making faiss object using document objects, specifically the list we made and giving it the client
-        # FAISS.from_documents handles the loop and embedding for us
+        # FAISS.from_documents handles embeddings
         # text_vector_store = FAISS.from_documents(documents=text_documents, embeddings=text_embedding_model)
         text_vector_store = FAISS.from_documents(documents=text_documents, embedding=text_embedding_model)
 
@@ -316,7 +316,10 @@ def load_vector_stores():
         if os.path.exists("experiment/my_image_index"):
             # For image index, we need to load without embedding function
             dimensions_image_embeddings = 3072
+
+            #l2 matrix
             index = faiss.IndexFlatL2(dimensions_image_embeddings)
+            
             image_store = FAISS.load_local(
                 "experiment/my_image_index",
                 embeddings=None,
@@ -363,7 +366,7 @@ def query_image_index(image_store, query, k=2):
     
     # Search the image index
     distances, indices = image_store.index.search(query_vector_np, k)
-    
+   
     # Get documents and combine with distances
     results = []
     for i, idx in enumerate(indices[0]):
@@ -425,7 +428,7 @@ Please provide a helpful answer based on the context above."""
         system_prompt = """You are a helpful assistant analyzing presentation slides.
 You have been given the actual slide images to analyze visually.
 Answer the user's question based on what you see in these slides. Be specific and cite slide numbers when relevant."""
-        
+       
         # Build content array with images
         content = []
         
@@ -469,7 +472,7 @@ Answer the user's question based on what you see in these slides. Be specific an
     
     try:
         response = bedrock_client.invoke_model(
-            modelId="us.anthropic.claude-sonnet-4-20250514-v1:0",
+            modelId="us.anthropic.claude-opus-4-20250514-v1:0",
             body=body
         )
         
@@ -542,7 +545,7 @@ Text content from slides:
         })
         
         response = bedrock_client.invoke_model(
-            modelId="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            modelId="us.anthropic.claude-opus-4-20250514-v1:0",
             body=body
         )
         
@@ -560,7 +563,7 @@ Text content from slides:
 #         data = page.get_text('dict', flags=11)
 
 
-# ==================== STREAMLIT APP ====================
+# Streamlit App
 
 def main():
     st.set_page_config(page_title="Dual-RAG Presentation Chatbot", layout="wide")
@@ -608,7 +611,7 @@ def main():
                     all_image_data = []
                     
                     for uploaded_file in uploaded_files:
-                        # Check file size (50MB = 52428800 bytes)
+                        # Check file size (50MB = 52428800 bytes), just set some generic limit not based on any guidelines
                         if uploaded_file.size > 52428800:
                             st.error(f"{uploaded_file.name} exceeds 50MB limit")
                             continue
@@ -732,6 +735,29 @@ def main():
                 else:
                     # Display simple combined view
                     st.markdown(message['content'])
+                    
+                    # Re-render images/scores from history
+                    
+                    #  Visual Matches (Images)
+                    if message.get('image_results'):
+                        with st.expander("🔍 View Retrieved Slides (Visual Match)"):
+                            for i, (doc, score) in enumerate(message['image_results'], 1):
+                                similarity = distance_to_similarity_percentage(score)
+                                st.markdown(f"**Slide {doc.metadata.get('slide_number', 'N/A')}** from *{doc.metadata.get('source', 'Unknown')}* (Similarity: {similarity:.1f}%)")
+                                
+                                if 'image_bytes' in doc.metadata:
+                                    image = Image.open(io.BytesIO(doc.metadata['image_bytes']))
+                                    st.image(image, use_container_width=True)
+                                st.divider()
+
+                    # 2. Text Matches (Snippets)
+                    if message.get('text_results'):
+                        with st.expander("📄 View Retrieved Text (Text Match)"):
+                            for i, (doc, score) in enumerate(message['text_results'], 1):
+                                similarity = distance_to_similarity_percentage(score)
+                                st.markdown(f"**Slide {doc.metadata.get('slide_number', 'N/A')}** from *{doc.metadata.get('source', 'Unknown')}* (Similarity: {similarity:.1f}%)")
+                                st.text(doc.page_content[:300] + "...")
+                                st.divider()
     
     # Chat input
     user_query = st.chat_input("Ask a question about your presentations...")
@@ -767,7 +793,7 @@ def main():
                         ])
                         text_response = get_claude_response(user_query, text_context, 'text')
                         st.markdown(text_response)
-                        
+                       
                         if text_results:
                             with st.expander("View Retrieved Text Chunks"):
                                 for i, (doc, score) in enumerate(text_results, 1):
