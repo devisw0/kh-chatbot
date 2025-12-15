@@ -1,0 +1,14 @@
+[
+    {
+        "query": "What's the launch location?",
+        "expected_output": "Dallas to Houston route"  
+    },
+    {
+        "query": "What's Q1 2024 revenue?",
+        "expected_output": "$10 million"  
+    },
+    {
+        "query": "How many employees?",
+        "expected_output": "500 employees as of Q3"  
+    }
+]

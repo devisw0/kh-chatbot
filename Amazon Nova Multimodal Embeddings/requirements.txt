@@ -9,3 +9,6 @@ langchain-aws
 langchain-community
 faiss-cpu
 numpy
+deepeval
+aiobotocore
+fastapi
