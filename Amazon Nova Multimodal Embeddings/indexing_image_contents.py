@@ -648,6 +648,60 @@ Text content from slides:
     except Exception as e:
         return f"Error generating response: {str(e)}"
 
+def get_image_descriptions_for_eval(image_results):
+    """
+    Generate text descriptions of retrieved images for evaluation.
+    Called before passing context to DeepEval.
+    """
+    if not image_results:
+        return ""
+    
+    session = boto3.Session(profile_name=PROFILE_NAME, region_name=REGION_NAME)
+    bedrock_client = session.client('bedrock-runtime')
+    
+    descriptions = []
+    
+    for doc, score in image_results:
+        if 'image_bytes' not in doc.metadata:
+            continue
+            
+        image_base64 = base64.b64encode(doc.metadata['image_bytes']).decode('utf-8')
+        
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 500,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": image_base64
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": "Describe this slide's key content in 2-3 sentences. Focus on facts, data, and main points visible."
+                    }
+                ]
+            }]
+        })
+        
+        try:
+            response = bedrock_client.invoke_model(
+                modelId="us.anthropic.claude-sonnet-4-20250514-v1:0",
+                body=body
+            )
+            response_body = json.loads(response['body'].read())
+            description = response_body['content'][0]['text']
+            descriptions.append(f"Slide {doc.metadata['slide_number']} from {doc.metadata['source']}:\n{description}")
+        except Exception as e:
+            print(f"Error describing image: {e}")
+            descriptions.append(f"Slide {doc.metadata['slide_number']} from {doc.metadata['source']}: [Description unavailable]")
+    
+    return "\n\n".join(descriptions)
 
 # Streamlit App
 
@@ -904,10 +958,11 @@ def main():
                         ])
                         image_response = get_claude_response(user_query, image_context, 'image', image_results=image_results)
                         st.markdown(image_response)
-                        
+                       
                         # Evaluate image response
                         with st.spinner("Evaluating..."):
-                            image_metrics = evaluate_response(user_query, image_context, image_response, 'image')
+                            image_descriptions = get_image_descriptions_for_eval(image_results)
+                            image_metrics = evaluate_response(user_query, image_descriptions, image_response, 'image')
                             if image_metrics:
                                 display_evaluation_metrics(image_metrics, "(Image)")
                         
@@ -967,8 +1022,11 @@ def main():
                                 st.text(doc.page_content[:300] + "...")
                                 st.divider()
                     # Evaluate combined response
+                    # Evaluate combined response
                     with st.spinner("Evaluating..."):
-                        combined_context = f"{text_context}\n\n{image_context}"
+                        # Generate descriptions of retrieved images for evaluation
+                        image_descriptions = get_image_descriptions_for_eval(image_results)
+                        combined_context = f"{text_context}\n\n{image_descriptions}"
                         combined_metrics = evaluate_response(user_query, combined_context, combined_response, 'combined')
                         if combined_metrics:
                             display_evaluation_metrics(combined_metrics)
