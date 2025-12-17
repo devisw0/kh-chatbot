@@ -33,13 +33,13 @@ import requests
 PROFILE_NAME = "devan2"
 REGION_NAME = "us-east-1"
 
-
+#path of file in RAM, thats where t goes when uploaded
 def convert_pdf_pages_to_text_and_images(path, slide_show_name):
 
     image_data_list = []
     text_data_list = []
 
-    #opening the document
+    #opening the document, object similar to like list
     document = pymupdf.open(path)
 
     for i, page_obj in enumerate(document):
@@ -48,10 +48,18 @@ def convert_pdf_pages_to_text_and_images(path, slide_show_name):
         slide_text = page_obj.get_text('text')
 
         #will be using for image text
-        loaded_page_pix_map = page_obj.get_pixmap(dpi=140)
+        # loaded_page_pix_map = page_obj.get_pixmap(dpi=140)
+
+        #changing temporarily to higher dpi -> image compression of higher quality. testing if this helps with the issue.
+        #alpha false to force transparent backgrounds white
+        loaded_page_pix_map = page_obj.get_pixmap(dpi=300, alpha = False)
 
         #converting our pixmap to bytes, pixmap not usable to aws, or pillow
-        picture_in_bytes = loaded_page_pix_map.tobytes('png')
+        # picture_in_bytes = loaded_page_pix_map.tobytes('png')
+
+        #temporarily changing this to jpeg for "compression" of higher quality pixel map bytes
+        picture_in_bytes = loaded_page_pix_map.tobytes('jpeg', jpg_quality=90)
+
 
         #aws requires json format and we cant send raw binary 0s and 1s in JSON
         #base64 allows us to convert the binary into into a byte string
@@ -111,7 +119,7 @@ def get_boto_client():
     session = boto3.Session(profile_name=PROFILE_NAME, region_name=REGION_NAME)
     return session.client('bedrock-runtime')
 
-
+#for embedding our images
 def get_multimodal_vector(bedrock_client, base64_string):
     """
     Sends a Base64 image string to Amazon Nova Multimodal Embeddings 
@@ -119,14 +127,15 @@ def get_multimodal_vector(bedrock_client, base64_string):
     """
     #dumps converts dict to string - Nova uses a different schema
     body = json.dumps({
-        'schemaVersion': 'nova-multimodal-embed-v1',
-        'taskType': 'SINGLE_EMBEDDING',
+        'schemaVersion': 'nova-multimodal-embed-v1', #version of the input format
+        'taskType': 'SINGLE_EMBEDDING', #not batch of embeddings
         'singleEmbeddingParams': {
-            'embeddingPurpose': 'GENERIC_INDEX',  # For indexing slides
+            'embeddingPurpose': 'GENERIC_INDEX',  # For indexing slides, generic so not to specific when embedding
             'embeddingDimension': 3072,
-            'image': {
-                'format': 'png',
-                'source': {'bytes': base64_string}
+            'image': { #payload
+                # 'format': 'png',
+                'format': 'jpeg',
+                'source': {'bytes': base64_string} #content for payload
             }
         }
     })
@@ -137,8 +146,8 @@ def get_multimodal_vector(bedrock_client, base64_string):
             body=body,
             modelId="amazon.nova-2-multimodal-embeddings-v1:0",
             #headers of the request
-            accept="application/json",
-            contentType="application/json"
+            accept="application/json", #what we are sending -> for app and in json
+            contentType="application/json" #what we want back
         )
         #loads converts response string to dictionary
         #boto3 is streaming body request, continuous stream
@@ -152,7 +161,7 @@ def get_multimodal_vector(bedrock_client, base64_string):
         print(f"error getting image embedding {e}")
         return None
 
-
+#will use for embedding usery queries for image retrieval (same model)
 def get_multimodal_text_vector(bedrock_client, text_query):
     """
     Sends a text query to Amazon Nova Multimodal Embeddings 
@@ -160,10 +169,10 @@ def get_multimodal_text_vector(bedrock_client, text_query):
     """
     #dumps converts dict to string - Nova uses a different schema
     body = json.dumps({
-        'schemaVersion': 'nova-multimodal-embed-v1',
-        'taskType': 'SINGLE_EMBEDDING',
+        'schemaVersion': 'nova-multimodal-embed-v1', #version of the input format
+        'taskType': 'SINGLE_EMBEDDING', #not batch of embeddings
         'singleEmbeddingParams': {
-            'embeddingPurpose': 'IMAGE_RETRIEVAL',  # For searching image index
+            'embeddingPurpose': 'IMAGE_RETRIEVAL',  # For searching image index, using visual equivalent of query
             'embeddingDimension': 3072,
             'text': {
                 'truncationMode': 'END',
@@ -191,7 +200,7 @@ def get_multimodal_text_vector(bedrock_client, text_query):
         print(f"error getting text embedding for image search {e}")
         return None
 
-
+#making the vector stores for both image embeddings and text embeddings for a pdf slide show
 def create_dual_vector_stores(text_data_list, image_data_list):
     """
     Takes extracted text and image data, creates two separate vector stores,
@@ -249,44 +258,62 @@ def create_dual_vector_stores(text_data_list, image_data_list):
                     metadata={
                         'slide_number': image_data['slide_number'],
                         'source': image_data['source'],
-                        'image_bytes': image_data['image_bytes'] 
+                        'image_bytes': image_data['image_bytes'] # using raw bytes for slide displaying
                     }
                 )
             image_documents.append(doc)
 
     if image_data_list:
         if image_vectors:
-            #making matrix for FAISS library
+            #making matrix for FAISS Langchain index later on
             dimensions_image_embeddings = 3072
+
+            #Eucliedian Distance matrix with 3072 dimensions because thats what I specified for image embedding model (also the default for that)
             index = faiss.IndexFlatL2(dimensions_image_embeddings)
 
             #already have embeddings, index for it is used for size + method, docstore is to create empty storage in RAM, index_to_docstore_id is to keep the indexes empty
             image_vector_store = FAISS(embedding_function=None, index=index, docstore=InMemoryDocstore(), index_to_docstore_id={})
 
+            #adding embeddings to the vector store
             image_vector_store.add_embeddings(
+
+                #text_embeddings parameter expects list of tuples so we convert image_vectors to that and pair with ""
                 text_embeddings=list(zip([""] * len(image_vectors), image_vectors)),
+
+                #list comprehension to line up associated metadata values for objects in image_documents
                 metadatas=[d.metadata for d in image_documents],
+
+                #similar but we j want the ids and assign them to the image_documents
                 ids=[str(i) for i in range(len(image_documents))]
+
+                #this is how we align our vectors with 
             )
-            
+           
             # Save
             image_vector_store.save_local("experiment/my_image_index")
             print("Visual Index saved to 'experiment/my_image_index'")
 
-
+#lets us reload saved store
 def load_vector_stores():
     """
     Loads existing FAISS indexes from disk.
     Returns text_store, image_store (can be None if not found)
     """
+
+    #to fail gracefully
     text_store = None
     image_store = None
-   
+  
     try:
+        #check for existing index
         if os.path.exists("experiment/my_text_index"):
+            #text embedding model client
             text_embedding_model = get_text_embedding_model()
+
+            #loading the local index
             text_store = FAISS.load_local(
                 "experiment/my_text_index", 
+                #client
                 embeddings=text_embedding_model,
                 allow_dangerous_deserialization=True
             )
@@ -297,10 +324,11 @@ def load_vector_stores():
     try:
         if os.path.exists("experiment/my_image_index"):
             # For image index, we need to load without embedding function
-            dimensions_image_embeddings = 3072
-            #l2 matrix
-            index = faiss.IndexFlatL2(dimensions_image_embeddings)
-            
+            # dimensions_image_embeddings = 3072
+            # #l2 matrix
+            # index = faiss.IndexFlatL2(dimensions_image_embeddings)
+           
+           #loading image vector index, no embedding model since its not text embeddings
             image_store = FAISS.load_local(
                 "experiment/my_image_index",
                 embeddings=None,
@@ -312,8 +340,8 @@ def load_vector_stores():
     
     return text_store, image_store
 
-
-def query_text_index(text_store, query, k=2):
+#to be able to get the search resuts
+def query_text_index(text_store, query, k=3):
     """
     Query the text FAISS index and return results with similarity scores.
     Returns list of tuples: (Document, distance_score)
@@ -322,11 +350,12 @@ def query_text_index(text_store, query, k=2):
         return []
     
     # similarity_search_with_score returns (Document, score)
+    #embeds the query, searches and returns the score + document object
     results = text_store.similarity_search_with_score(query, k=k)
     return results
 
-
-def query_image_index(image_store, query, k=2):
+#to turn text queries into visual vectors (for image answers)
+def query_image_index(image_store, query, k=3):
     """
     Query the image FAISS index using text query.
     Converts text to multimodal embedding first.
@@ -342,19 +371,29 @@ def query_image_index(image_store, query, k=2):
     if query_vector is None:
         return []
     
-    # Convert to numpy array for FAISS
+    # Convert to numpy array for FAISS, it wants a batch
+    #gotta make it known it is a 1x3072 array specifically
     query_vector_np = np.array([query_vector], dtype=np.float32)
-    
-    # Search the image index
-    distances, indices = image_store.index.search(query_vector_np, k)
    
+    # Search the image index
+    #returns the distances and the top k ids, had to bypass langchain for this because image embeddings
+    #indices is the list of sublists with each filled with k retrieved ids of the closest matches. -> indices = [[1,2],[45,99]...] its 2 in each rn cuz i set k=2
+    distances, indices = image_store.index.search(query_vector_np, k)
+    
     # Get documents and combine with distances
     results = []
+
+    #looping thru the k returned from our searched 
     for i, idx in enumerate(indices[0]):
         if idx != -1:  # Valid result
+            #getting the uuid based on the id we are on rn, unique name due incase changes due to deletion etc.
             doc_id = image_store.index_to_docstore_id.get(idx)
             if doc_id:
+                #then using that uuid we search our index
                 doc = image_store.docstore.search(doc_id)
+
+                #tuple for get_claude_response
+                #document,score
                 results.append((doc, distances[0][i]))
     
     return results
@@ -367,10 +406,11 @@ def distance_to_similarity_percentage(distance):
     """
     # Using exponential decay: similarity = e^(-distance/scale)
     # Scale factor of 2.0 works well for normalized embeddings
+    #changing form default faiss return
     similarity = np.exp(-distance / 2.0) * 100
     return min(100, max(0, similarity))
 
-
+#gonna be using the api using DeepEval
 def evaluate_response(query, context, response, retrieval_type):
     """
     Evaluate Claude's response by calling the FastAPI evaluation service.
@@ -379,21 +419,23 @@ def evaluate_response(query, context, response, retrieval_type):
     Returns dict with scores or None if API call fails.
     """
     try:
-        # API endpoint (make sure your FastAPI server is running on port 8000)
+        # API endpoint (this is from our evaluation llm api)
+        # am running the API locally at the moment
         api_url = "http://localhost:8000/evaluate"
         
         # Package data into the format the API expects
-        # This matches the EvalRequest model we defined in the API
+        # This matches the EvalRequest model we defined for the API
+        #info from inputs in the function
         payload = {
-            "query": query,              # User's question
+            "query": query,              # User's query
             "context": context,          # Retrieved context (text or image descriptions)
-            "response": response,        # Claude's response we're evaluating
-            "eval_type": retrieval_type, # "text", "image", or "combined"
-            "threshold": 0.7             # Minimum passing score
+            "response": response,        # Claude's response we r evaluating
+            "eval_type": retrieval_type, # "text", "image", or "combined" retrieval types
+            "threshold": 0.7             # Minimum score for the api to mark as passed
         }
         
-        # Send POST request to API
-        # timeout=60 because evaluations can take 10-30 seconds
+        # Send post request to API
+        # timeout=60 because evaluations can take 10-30 seconds, also had to make changes because calls to models would cause timeouts
         api_response = requests.post(api_url, json=payload, timeout=60)
         
         # Check if request was successful (status code 200)
@@ -401,10 +443,15 @@ def evaluate_response(query, context, response, retrieval_type):
         
         # Parse JSON response from API
         # API returns: {faithfulness: 0.92, answer_relevancy: 0.85, ...}
+        # turning the json response to a dictionary
         metrics = api_response.json()
         
         # Convert API response to match our existing format
         # This ensures compatibility with display_evaluation_metrics()
+
+        # Making the returned response (after converted to dict) into our own dict
+        # So when we call evaluate_response, we return a dictionary itself so like response_dict = evaluate_response means 
+            #  response_dict is the output of the funciton and it is the dict containing the metrics
         return {
             'faithfulness': metrics['faithfulness'],
             'answer_relevancy': metrics['answer_relevancy'],
@@ -415,17 +462,17 @@ def evaluate_response(query, context, response, retrieval_type):
         }
         
     except requests.exceptions.Timeout:
-        # API took too long (>60 seconds)
+        # API took too long (>60 seconds), set for 60s because it would time out much faster before when i would make the calls
         print(f"Evaluation API timeout - request took longer than 60 seconds")
         return None
         
     except requests.exceptions.ConnectionError:
-        # Can't reach API (is it running? Check http://localhost:8000/health)
+        # cant reach API, error in case api is not running/not running properly on port 8000
         print(f"Cannot connect to evaluation API - is it running on port 8000?")
         return None
         
     except requests.exceptions.HTTPError as e:
-        # API returned an error (4xx or 5xx status code)
+        # API returned an error (400s or 500s status code)
         print(f"Evaluation API error: {e}")
         return None
         
@@ -434,19 +481,27 @@ def evaluate_response(query, context, response, retrieval_type):
         print(f"Unexpected evaluation error: {e}")
         return None
 
-
+# For displaying our metrics (from evaluate response)
 def display_evaluation_metrics(metrics, label=""):
     """Display evaluation metrics in an expandable section"""
+
+    # conditional to see if metrics actually were passed thru
     if not metrics:
         return
-    
+   
     # Count how many metrics we have (3 required + 2 optional)
+    # I made those two optional because they require ground truth/expected output and this is not possible solely on the user end
     required_metrics = ['faithfulness', 'answer_relevancy', 'contextual_relevancy']
+
+    # Only going to be used when testing, not in the actual streamlit app
     optional_metrics = ['contextual_recall', 'factual_correctness']
     
     # Calculate average only from metrics that exist
+    # Appending the scores for the required metrics into scores
+    # Works because we pass in output (dict of scores) from evaluate_response into display_evaluation metrics in teh metric parameter 
+    # then we j loop thru the keys and take the value for for each key in the list (length of m) and appends to scores
     scores = [metrics[m] for m in required_metrics]
-    
+   
     # Add optional metrics to average if they exist and are not None
     if metrics.get('contextual_recall') is not None:
         scores.append(metrics['contextual_recall'])
@@ -455,7 +510,7 @@ def display_evaluation_metrics(metrics, label=""):
     
     avg_score = sum(scores) / len(scores)
     
-    # Determine overall color
+    # J color for the visuals in the dropdown
     if avg_score >= 0.8:
         color = "🟢"
     elif avg_score >= 0.6:
@@ -463,6 +518,7 @@ def display_evaluation_metrics(metrics, label=""):
     else:
         color = "🔴"
     
+    # Dropdown menu with the specified "color" and the label
     with st.expander(f"{color} 📊 Evaluation Metrics {label}"):
         # Calculate number of columns needed (3 required + up to 2 optional)
         num_cols = 3
@@ -471,11 +527,16 @@ def display_evaluation_metrics(metrics, label=""):
         if metrics.get('factual_correctness') is not None:
             num_cols += 1
         
-        # Create columns dynamically
-        cols = st.columns(num_cols)
-        col_idx = 0
+        # Qhecking for number of columns ^^ -> have this here in case we decide to add like a testing mode instead of j user questions
         
-        # Always show these 3
+        # Making the columns dynamically here
+        cols = st.columns(num_cols)
+
+
+        col_idx = 0
+       
+        # Always show these 3, making Streamlit columns and having conditional to prevent erros
+        # Updating column index each time so we dont overlap
         with cols[col_idx]:
             st.metric("Faithfulness", f"{metrics['faithfulness']:.1%}")
             if metrics['faithfulness_reason']:
@@ -510,12 +571,16 @@ def display_evaluation_metrics(metrics, label=""):
 
 
 def get_claude_response(query, context, retrieval_type, image_results=None):
+    #image results is a list of tuples, comes from query_image_index -> (document object, score)
     """
     Generate Claude response using retrieved context.
     retrieval_type: 'text' or 'image' to customize the prompt
     image_results: list of (Document, score) tuples with image_bytes in metadata
     """
+
+    #making boto3 session with my credentials
     session = boto3.Session(profile_name=PROFILE_NAME, region_name=REGION_NAME)
+    #now bedrock runtime client with our credentials
     bedrock_client = session.client('bedrock-runtime')
     
     # Customize prompt based on retrieval type
@@ -530,7 +595,9 @@ Answer the user's question based on this text content. Be specific and cite slid
 User question: {query}
 
 Please provide a helpful answer based on the context above."""
-        
+
+        # have to make the body in this format for the request
+        # dumps turns dict to json
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 2000,
@@ -552,20 +619,30 @@ Answer the user's question based on what you see in these slides. Be specific an
         # Add each retrieved slide image
         if image_results:
             for doc, score in image_results:
+                # Appending slide number and source in metadata param in document to the content (list of dictionaries) -> (type, metadata content for image embedding)
                 content.append({"type": "text", "text": f"\nSlide {doc.metadata['slide_number']} from {doc.metadata['source']}:"})
-                
+               
                 # Add the actual image
                 if 'image_bytes' in doc.metadata:
+
+                    # Taking the raw bytes -> base64 -> actual string, aws runtime api wants an actual string
                     image_base64 = base64.b64encode(doc.metadata['image_bytes']).decode('utf-8')
+
+                    #setting up object in content
                     content.append({
                         "type": "image",
                         "source": {
                             "type": "base64",
-                            "media_type": "image/png",
+                            # "media_type": "image/png",
+                            "media_type": "image/jpeg",
                             "data": image_base64
                         }
                     })
-        
+
+            #putting both the text metadata and image content into list, without seperation. Claude j sees them top down and associates them in pairs (text metadata + image content)
+            #since they are sequential llm can j tell they are pairs
+
+            #converting to json format so we can make the call
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 2000,
@@ -574,12 +651,16 @@ Answer the user's question based on what you see in these slides. Be specific an
         })
     
     try:
+        #making the call
         response = bedrock_client.invoke_model(
             modelId="us.anthropic.claude-sonnet-4-20250514-v1:0",
             body=body
         )
         
+        #waiting for entire streaming response and then reading it, we take the body value and then wann=t to convert that to dict
         response_body = json.loads(response['body'].read())
+
+        #want to get specific 1st item in the content key's value list, and then in that we want the text key's value to get the actual text top response
         answer = response_body['content'][0]['text']
         return answer
         
@@ -587,6 +668,8 @@ Answer the user's question based on what you see in these slides. Be specific an
         return f"Error generating response: {str(e)}"
 
 
+#similar thing but appending both text content + image content (and metadata) in same body. have a section specifying what is what
+#cant append the image content like the text content because we are sending the string of the base64 encoded bytes
 def get_combined_claude_response(query, text_context, image_context, image_results=None):
     """
     Generate single Claude response using both text and image contexts combined.
@@ -609,6 +692,8 @@ Synthesize information from both sources to provide a comprehensive answer. Be s
 Text content from slides:
 {text_context}"""
     })
+
+    #in streamlit app I will unpack and join the list of tuples into a string
     
     # Add the actual slide images
     if image_results:
@@ -623,11 +708,12 @@ Text content from slides:
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": "image/png",
+                        # "media_type": "image/png",
+                        "media_type": "image/jpeg",
                         "data": image_base64
                     }
                 })
-    
+   
     try:
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
@@ -677,7 +763,8 @@ def get_image_descriptions_for_eval(image_results):
                         "type": "image",
                         "source": {
                             "type": "base64",
-                            "media_type": "image/png",
+                            # "media_type": "image/png",
+                            "media_type": "image/jpeg",
                             "data": image_base64
                         }
                     },
@@ -688,7 +775,7 @@ def get_image_descriptions_for_eval(image_results):
                 ]
             }]
         })
-        
+       
         try:
             response = bedrock_client.invoke_model(
                 modelId="us.anthropic.claude-sonnet-4-20250514-v1:0",
@@ -918,8 +1005,8 @@ def main():
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 # Query both indexes
-                text_results = query_text_index(st.session_state.text_store, user_query, k=2)
-                image_results = query_image_index(st.session_state.image_store, user_query, k=2)
+                text_results = query_text_index(st.session_state.text_store, user_query, k=3)
+                image_results = query_image_index(st.session_state.image_store, user_query, k=3)
                 
                 if st.session_state.comparison_mode:
                     # Comparison mode - two separate responses
