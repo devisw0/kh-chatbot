@@ -48,11 +48,11 @@ def convert_pdf_pages_to_text_and_images(path, slide_show_name):
         slide_text = page_obj.get_text('text')
 
         #will be using for image text
-        # loaded_page_pix_map = page_obj.get_pixmap(dpi=140)
+        loaded_page_pix_map = page_obj.get_pixmap(dpi=140)
 
         #changing temporarily to higher dpi -> image compression of higher quality. testing if this helps with the issue.
         #alpha false to force transparent backgrounds white
-        loaded_page_pix_map = page_obj.get_pixmap(dpi=300, alpha = False)
+        # loaded_page_pix_map = page_obj.get_pixmap(dpi=300, alpha = False)
 
         #converting our pixmap to bytes, pixmap not usable to aws, or pillow
         # picture_in_bytes = loaded_page_pix_map.tobytes('png')
@@ -133,8 +133,8 @@ def get_multimodal_vector(bedrock_client, base64_string):
             'embeddingPurpose': 'GENERIC_INDEX',  # For indexing slides, generic so not to specific when embedding
             'embeddingDimension': 3072,
             'image': { #payload
-                # 'format': 'png',
-                'format': 'jpeg',
+                'format': 'png',
+                # 'format': 'jpeg',
                 'source': {'bytes': base64_string} #content for payload
             }
         }
@@ -570,12 +570,139 @@ def display_evaluation_metrics(metrics, label=""):
                 # Ragas doesn't return reasons like DeepEval, so skip caption
 
 
-def get_claude_response(query, context, retrieval_type, image_results=None):
+# ============================================================================
+# TWO-PHASE EXTRACTION FUNCTIONS
+# Phase 1: Extract ALL text/data from images using Claude vision
+# Phase 2: Use extracted text for synthesis (avoids vision encoder compression issues)
+# ============================================================================
+
+def extract_text_from_images(image_results, query=None):
+    """
+    PHASE 1: Thorough text extraction from retrieved images.
+    
+    Uses Claude vision to comprehensively extract ALL visible text and data
+    from slide images, especially from embedded screenshots, tables, and UI elements.
+    
+    This avoids the image compression/resizing issues that occur when Claude's
+    vision encoder processes images directly for synthesis.
+    
+    Args:
+        image_results: list of (Document, score) tuples with image_bytes in metadata
+        query: optional user query to help focus extraction (but extraction is still comprehensive)
+    
+    Returns:
+        dict mapping slide identifiers to extracted text content
+        Format: {
+            "Slide X from source.pdf": "extracted text content...",
+            ...
+        }
+    """
+    if not image_results:
+        return {}
+    
+    session = boto3.Session(profile_name=PROFILE_NAME, region_name=REGION_NAME)
+    bedrock_client = session.client('bedrock-runtime')
+    
+    extractions = {}
+    
+    # Build the extraction prompt - comprehensive and thorough
+    extraction_prompt = """Thoroughly inspect this slide and extract ALL visible text and data. Be extremely comprehensive and precise.
+
+Include EVERYTHING you can see:
+1. **Main slide text**: Titles, headings, bullet points, paragraphs
+2. **Embedded screenshots/UI elements**: 
+   - Column headers and row labels (be VERY careful to read these accurately)
+   - Cell values and data in tables
+   - Button labels, field names, dropdown values
+   - Status indicators, tags, badges
+3. **Charts and graphs**: Axis labels, legends, data values, titles
+4. **Annotations**: Arrows, callouts, highlighted text, notes
+5. **Small print**: Footers, timestamps, version numbers, watermarks
+
+CRITICAL INSTRUCTIONS:
+- Read column headers LEFT TO RIGHT carefully - don't confuse similar columns
+- For tables, preserve the column-to-value relationship clearly
+- If text is small or partially visible, note what you can read and indicate uncertainty
+- Don't summarize or interpret - just transcribe what you see
+- Use markdown formatting to preserve structure (tables, lists, etc.)
+
+Extract everything now:"""
+
+    for doc, score in image_results:
+        if 'image_bytes' not in doc.metadata:
+            continue
+        
+        slide_id = f"Slide {doc.metadata['slide_number']} from {doc.metadata['source']}"
+        
+        image_base64 = base64.b64encode(doc.metadata['image_bytes']).decode('utf-8')
+        
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 4000,  # Higher token limit for comprehensive extraction
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            # "media_type": "image/jpeg",
+                            "data": image_base64
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": extraction_prompt
+                    }
+                ]
+            }]
+        })
+        
+        try:
+            response = bedrock_client.invoke_model(
+                modelId="us.anthropic.claude-sonnet-4-20250514-v1:0",
+                body=body
+            )
+            response_body = json.loads(response['body'].read())
+            extracted_text = response_body['content'][0]['text']
+            extractions[slide_id] = extracted_text
+        except Exception as e:
+            print(f"Error extracting text from {slide_id}: {e}")
+            extractions[slide_id] = "[Extraction failed - image could not be processed]"
+    
+    return extractions
+
+
+def format_extractions_as_context(extractions):
+    """
+    Helper function to format extracted text into a context string for Phase 2.
+    
+    Args:
+        extractions: dict from extract_text_from_images()
+    
+    Returns:
+        Formatted string with all extractions
+    """
+    if not extractions:
+        return ""
+    
+    formatted_parts = []
+    for slide_id, extracted_text in extractions.items():
+        formatted_parts.append(f"=== {slide_id} ===\n{extracted_text}")
+    
+    return "\n\n".join(formatted_parts)
+
+
+def get_claude_response(query, context, retrieval_type, image_results=None, use_two_phase=True):
     #image results is a list of tuples, comes from query_image_index -> (document object, score)
     """
     Generate Claude response using retrieved context.
     retrieval_type: 'text' or 'image' to customize the prompt
     image_results: list of (Document, score) tuples with image_bytes in metadata
+    use_two_phase: if True, uses two-phase extraction for image retrieval (default: True)
+                   Phase 1: Extract text from images
+                   Phase 2: Synthesize answer from extracted text (no raw images)
     """
 
     #making boto3 session with my credentials
@@ -605,50 +732,81 @@ Please provide a helpful answer based on the context above."""
             "messages": [{"role": "user", "content": prompt}]
         })
         
-    else:  # image retrieval - send actual images
-        system_prompt = """You are a helpful assistant analyzing presentation slides.
+    else:  # image retrieval
+        if use_two_phase and image_results:
+            # TWO-PHASE APPROACH: Extract text first, then synthesize from text only
+            # This avoids vision encoder compression issues with small text/screenshots
+            
+            # Phase 1: Extract all text from images
+            extractions = extract_text_from_images(image_results, query)
+            extracted_context = format_extractions_as_context(extractions)
+            
+            # Phase 2: Synthesize answer from extracted text (TEXT-ONLY prompt)
+            system_prompt = """You are a helpful assistant analyzing presentation slides.
+You have been given comprehensive text extractions from slide images, including all visible text, 
+tables, UI elements, and data. The extractions preserve the structure and relationships in the original slides.
+Answer the user's question based on this extracted content. Be specific and cite slide numbers when relevant."""
+            
+            prompt = f"""Extracted content from slides:
+{extracted_context}
+
+User question: {query}
+
+Please provide a helpful answer based on the extracted content above. Pay careful attention to 
+column headers, table structures, and data relationships that were extracted from the slides."""
+
+            body = json.dumps({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 2000,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": prompt}]
+            })
+        else:
+            # ORIGINAL APPROACH: Send actual images directly to Claude
+            # (kept for comparison or fallback)
+            system_prompt = """You are a helpful assistant analyzing presentation slides.
 You have been given the actual slide images to analyze visually.
 Answer the user's question based on what you see in these slides. Be specific and cite slide numbers when relevant."""
-       
-        # Build content array with images
-        content = []
-        
-        # Add the query first
-        content.append({"type": "text", "text": f"Please analyze these slides and answer: {query}"})
-        
-        # Add each retrieved slide image
-        if image_results:
-            for doc, score in image_results:
-                # Appending slide number and source in metadata param in document to the content (list of dictionaries) -> (type, metadata content for image embedding)
-                content.append({"type": "text", "text": f"\nSlide {doc.metadata['slide_number']} from {doc.metadata['source']}:"})
-               
-                # Add the actual image
-                if 'image_bytes' in doc.metadata:
+           
+            # Build content array with images
+            content = []
+            
+            # Add the query first
+            content.append({"type": "text", "text": f"Please analyze these slides and answer: {query}"})
+            
+            # Add each retrieved slide image
+            if image_results:
+                for doc, score in image_results:
+                    # Appending slide number and source in metadata param in document to the content (list of dictionaries) -> (type, metadata content for image embedding)
+                    content.append({"type": "text", "text": f"\nSlide {doc.metadata['slide_number']} from {doc.metadata['source']}:"})
+                   
+                    # Add the actual image
+                    if 'image_bytes' in doc.metadata:
 
-                    # Taking the raw bytes -> base64 -> actual string, aws runtime api wants an actual string
-                    image_base64 = base64.b64encode(doc.metadata['image_bytes']).decode('utf-8')
+                        # Taking the raw bytes -> base64 -> actual string, aws runtime api wants an actual string
+                        image_base64 = base64.b64encode(doc.metadata['image_bytes']).decode('utf-8')
 
-                    #setting up object in content
-                    content.append({
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            # "media_type": "image/png",
-                            "media_type": "image/jpeg",
-                            "data": image_base64
-                        }
-                    })
+                        #setting up object in content
+                        content.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                # "media_type": "image/jpeg",
+                                "data": image_base64
+                            }
+                        })
 
-            #putting both the text metadata and image content into list, without seperation. Claude j sees them top down and associates them in pairs (text metadata + image content)
-            #since they are sequential llm can j tell they are pairs
+                #putting both the text metadata and image content into list, without seperation. Claude j sees them top down and associates them in pairs (text metadata + image content)
+                #since they are sequential llm can j tell they are pairs
 
-            #converting to json format so we can make the call
-        body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 2000,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": content}]
-        })
+                #converting to json format so we can make the call
+            body = json.dumps({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 2000,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": content}]
+            })
     
     try:
         #making the call
@@ -670,58 +828,105 @@ Answer the user's question based on what you see in these slides. Be specific an
 
 #similar thing but appending both text content + image content (and metadata) in same body. have a section specifying what is what
 #cant append the image content like the text content because we are sending the string of the base64 encoded bytes
-def get_combined_claude_response(query, text_context, image_context, image_results=None):
+def get_combined_claude_response(query, text_context, image_context, image_results=None, use_two_phase=True):
     """
     Generate single Claude response using both text and image contexts combined.
+    
+    Args:
+        query: User's question
+        text_context: Text content from text retrieval
+        image_context: Basic image context (slide numbers/sources) - used if use_two_phase=False
+        image_results: list of (Document, score) tuples with image_bytes in metadata
+        use_two_phase: if True, extracts text from images first then synthesizes (default: True)
+                       This avoids vision encoder compression issues with embedded screenshots
     """
     session = boto3.Session(profile_name=PROFILE_NAME, region_name=REGION_NAME)
     bedrock_client = session.client('bedrock-runtime')
     
-    system_prompt = """You are a helpful assistant analyzing presentation slides.
+    if use_two_phase and image_results:
+        # TWO-PHASE APPROACH: Extract text from images first, then synthesize from text only
+        # This avoids vision encoder compression issues with small text/screenshots
+        
+        # Phase 1: Extract all text from images
+        extractions = extract_text_from_images(image_results, query)
+        extracted_image_context = format_extractions_as_context(extractions)
+        
+        # Phase 2: Synthesize from BOTH text retrieval AND extracted image text (TEXT-ONLY)
+        system_prompt = """You are a helpful assistant analyzing presentation slides.
+You have been given:
+1. Text content extracted from slides (digital text + OCR)
+2. Comprehensive visual extractions from slide images, including all visible text, tables, UI elements, and data
+
+Synthesize information from both sources to provide a comprehensive answer. 
+Be specific and cite slide numbers when relevant."""
+        
+        prompt = f"""=== TEXT RETRIEVAL CONTENT ===
+{text_context}
+
+=== VISUAL EXTRACTION FROM IMAGES ===
+{extracted_image_context}
+
+User question: {query}
+
+Please provide a helpful answer by synthesizing information from both the text content and 
+the visual extractions above. Pay careful attention to column headers, table structures, 
+and data relationships that were extracted from the slides."""
+
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 2000,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": prompt}]
+        })
+        
+    else:
+        # ORIGINAL APPROACH: Send raw images to Claude
+        # (kept for comparison or fallback)
+        system_prompt = """You are a helpful assistant analyzing presentation slides.
 You have been given both text content (digital text + OCR) AND the actual slide images.
 Synthesize information from both sources to provide a comprehensive answer. Be specific and cite slide numbers when relevant."""
-    
-    # Build content array with both text and images
-    content = []
-    
-    # Add the query
-    content.append({
-        "type": "text",
-        "text": f"""Please analyze these slides using both the extracted text and visual content to answer: {query}
+        
+        # Build content array with both text and images
+        content = []
+        
+        # Add the query
+        content.append({
+            "type": "text",
+            "text": f"""Please analyze these slides using both the extracted text and visual content to answer: {query}
 
 Text content from slides:
 {text_context}"""
-    })
+        })
 
-    #in streamlit app I will unpack and join the list of tuples into a string
-    
-    # Add the actual slide images
-    if image_results:
-        content.append({"type": "text", "text": "\nSlide images for visual analysis:"})
+        #in streamlit app I will unpack and join the list of tuples into a string
         
-        for doc, score in image_results:
-            content.append({"type": "text", "text": f"\nSlide {doc.metadata['slide_number']} from {doc.metadata['source']}:"})
+        # Add the actual slide images
+        if image_results:
+            content.append({"type": "text", "text": "\nSlide images for visual analysis:"})
             
-            if 'image_bytes' in doc.metadata:
-                image_base64 = base64.b64encode(doc.metadata['image_bytes']).decode('utf-8')
-                content.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        # "media_type": "image/png",
-                        "media_type": "image/jpeg",
-                        "data": image_base64
-                    }
-                })
-   
-    try:
+            for doc, score in image_results:
+                content.append({"type": "text", "text": f"\nSlide {doc.metadata['slide_number']} from {doc.metadata['source']}:"})
+                
+                if 'image_bytes' in doc.metadata:
+                    image_base64 = base64.b64encode(doc.metadata['image_bytes']).decode('utf-8')
+                    content.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            # "media_type": "image/jpeg",
+                            "data": image_base64
+                        }
+                    })
+        
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 2000,
             "system": system_prompt,
             "messages": [{"role": "user", "content": content}]
         })
-        
+   
+    try:
         response = bedrock_client.invoke_model(
             modelId="us.anthropic.claude-sonnet-4-20250514-v1:0",
             body=body
@@ -763,8 +968,8 @@ def get_image_descriptions_for_eval(image_results):
                         "type": "image",
                         "source": {
                             "type": "base64",
-                            # "media_type": "image/png",
-                            "media_type": "image/jpeg",
+                            "media_type": "image/png",
+                            # "media_type": "image/jpeg",
                             "data": image_base64
                         }
                     },
@@ -809,6 +1014,9 @@ def main():
         st.session_state.comparison_mode = True
     if 'indexes_loaded' not in st.session_state:
         st.session_state.indexes_loaded = False
+    # New: Toggle for two-phase extraction
+    if 'use_two_phase' not in st.session_state:
+        st.session_state.use_two_phase = True
     
     # Sidebar for file upload and settings
     with st.sidebar:
@@ -819,6 +1027,13 @@ def main():
             "Comparison Mode", 
             value=st.session_state.comparison_mode,
             help="Show side-by-side comparison of text vs. image retrieval"
+        )
+        
+        # Two-phase extraction toggle
+        st.session_state.use_two_phase = st.toggle(
+            "Two-Phase Extraction",
+            value=st.session_state.use_two_phase,
+            help="Extract text from images before synthesis (better for embedded screenshots/tables)"
         )
         
         st.divider()
@@ -1043,7 +1258,14 @@ def main():
                             f"Slide {doc.metadata['slide_number']} from {doc.metadata['source']}"
                             for doc, _ in image_results
                         ])
-                        image_response = get_claude_response(user_query, image_context, 'image', image_results=image_results)
+                        # Use two-phase extraction based on toggle
+                        image_response = get_claude_response(
+                            user_query, 
+                            image_context, 
+                            'image', 
+                            image_results=image_results,
+                            use_two_phase=st.session_state.use_two_phase
+                        )
                         st.markdown(image_response)
                        
                         # Evaluate image response
@@ -1089,7 +1311,14 @@ def main():
                         for doc, _ in image_results
                     ])
                    
-                    combined_response = get_combined_claude_response(user_query, text_context, image_context, image_results=image_results)
+                    # Use two-phase extraction based on toggle
+                    combined_response = get_combined_claude_response(
+                        user_query, 
+                        text_context, 
+                        image_context, 
+                        image_results=image_results,
+                        use_two_phase=st.session_state.use_two_phase
+                    )
                     st.markdown(combined_response)
                     if image_results:
                         with st.expander("🔍 View Retrieved Slides (Visual Match)"):
