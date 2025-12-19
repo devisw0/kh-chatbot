@@ -48,17 +48,17 @@ def convert_pdf_pages_to_text_and_images(path, slide_show_name):
         slide_text = page_obj.get_text('text')
 
         #will be using for image text
-        loaded_page_pix_map = page_obj.get_pixmap(dpi=140)
+        # loaded_page_pix_map = page_obj.get_pixmap(dpi=140)
 
         #changing temporarily to higher dpi -> image compression of higher quality. testing if this helps with the issue.
         #alpha false to force transparent backgrounds white
-        # loaded_page_pix_map = page_obj.get_pixmap(dpi=300, alpha = False)
+        loaded_page_pix_map = page_obj.get_pixmap(dpi=300, alpha = False)
 
         #converting our pixmap to bytes, pixmap not usable to aws, or pillow
-        # picture_in_bytes = loaded_page_pix_map.tobytes('png')
+        picture_in_bytes = loaded_page_pix_map.tobytes('png')
 
         #temporarily changing this to jpeg for "compression" of higher quality pixel map bytes
-        picture_in_bytes = loaded_page_pix_map.tobytes('jpeg', jpg_quality=90)
+        # picture_in_bytes = loaded_page_pix_map.tobytes('jpeg', jpg_quality=90)
 
 
         #aws requires json format and we cant send raw binary 0s and 1s in JSON
