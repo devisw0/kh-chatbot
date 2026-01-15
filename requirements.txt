@@ -1,0 +1,36 @@
+# Core AWS and LangChain
+boto3
+langchain
+langchain-aws
+langchain-community
+langchain-core
+
+# Vector Store
+faiss-cpu
+
+# PDF Processing
+pdfplumber
+pymupdf
+PyMuPDF
+
+# OCR and Image Processing
+pytesseract
+Pillow
+
+# Data Processing
+pandas
+numpy
+openpyxl
+
+# API and Web Framework
+fastapi
+uvicorn
+requests
+streamlit
+
+# Evaluation
+deepeval
+aiobotocore
+
+# Standard Library (no install needed, listed for reference)
+# asyncio, os, io, json, hashlib, base64, tempfile, shutil, warnings, re, datetime
