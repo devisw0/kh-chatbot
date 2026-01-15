@@ -11,7 +11,6 @@ faiss-cpu
 # PDF Processing
 pdfplumber
 pymupdf
-PyMuPDF
 
 # OCR and Image Processing
 pytesseract
@@ -31,6 +30,3 @@ streamlit
 # Evaluation
 deepeval
 aiobotocore
-
-# Standard Library (no install needed, listed for reference)
-# asyncio, os, io, json, hashlib, base64, tempfile, shutil, warnings, re, datetime

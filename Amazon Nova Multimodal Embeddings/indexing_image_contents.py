@@ -25,10 +25,12 @@ import streamlit as st
 import numpy as np
 import requests 
 
-# REMOVE these DeepEval imports - not needed anymore!
 # from deepeval.metrics import FaithfulnessMetric, AnswerRelevancyMetric, ContextualRelevancyMetric
 # from deepeval.test_case import LLMTestCase
 # from deepeval.models import AmazonBedrockModel
+
+#For windows, using pytessaract. specifying the path where i downloaded it
+pytesseract.pytesseract.tesseract_cmd = r'C:\Users\dxp4392\AppData\Local\Programs\Tesseract-OCR\tesseract.exe'
 
 PROFILE_NAME = "devan2"
 REGION_NAME = "us-east-1"
@@ -1001,7 +1003,7 @@ def main():
     st.set_page_config(page_title="Dual-RAG Presentation Chatbot", layout="wide")
     
     st.title("🎯 Dual-RAG Presentation Chatbot")
-    st.markdown("Upload presentations and ask questions. Compare answers from text vs. visual embeddings!")
+    st.markdown("Upload presentations and ask questions. Compare answers from text vs. visual embeddings")
     
     # Initialize session state
     if 'text_store' not in st.session_state:

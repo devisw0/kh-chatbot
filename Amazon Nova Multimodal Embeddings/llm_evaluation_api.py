@@ -28,7 +28,8 @@ app = FastAPI(title="RAG Evaluation API", version="1.0.0")
 # Initialize Bedrock judge with explicit profile
 aws_judge = AmazonBedrockModel(
     model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
-    region_name="us-east-1",
+    region="us-east-1"
+    # region_name="us-east-1",
     # profile_name=profile_name
 )
 
