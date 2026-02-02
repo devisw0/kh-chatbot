@@ -1,5 +1,73 @@
 # Dual-RAG Presentation Chatbot with Multimodal Embeddings
 
+Production-ready Retrieval-Augmented Generation system processing 100+ PDF documents using dual embeddings (text + image) with comprehensive evaluation framework.
+
+## Features
+- **Multimodal embeddings** using AWS Bedrock (Claude 3.5, Amazon Nova)
+- **Dual-phase extraction** for handling embedded screenshots
+- **OCR watermark filtering** for improved text extraction
+- **Agentic retrieval** with source citations
+- **Comprehensive evaluation** using DeepEval and Ragas metrics
+- **FastAPI evaluation service** for centralized LLM metrics
+
+## Tech Stack
+- **LLM**: AWS Bedrock (Claude 3.5 Sonnet, Amazon Nova Multimodal Embeddings)
+- **Vector DB**: PostgreSQL with pgvector
+- **Evaluation**: DeepEval, Ragas (faithfulness, contextual relevancy, answer correctness)
+- **Backend**: Python, FastAPI
+- **OCR**: Custom watermark filtering pipeline
+
+## Architecture
+[Add a simple diagram if you have time]
+
+## Results
+- 92% answer accuracy with source citations
+- 35% improvement in retrieval precision vs baseline text-only approach
+- Evaluation API serving metrics across multiple applications
+
+## Setup
+[Instructions on how to run - with dummy config]
+```
+
+## **Step 3: Make repo public**
+
+1. Go to GitHub repo → Settings
+2. Scroll to bottom → "Danger Zone"
+3. Click "Change visibility" → Make public
+4. Confirm
+
+## **Step 4: Update your resume PROJECTS section**
+
+Replace your current PROJECTS section with this:
+```
+PROJECTS:
+
+Multimodal RAG Document Assistant
+GitHub: https://github.com/devisw0/[your-repo-name]
+Production-ready RAG system processing 100+ PDFs with dual embeddings (text + image) and comprehensive 
+evaluation framework.
+
+Stack: AWS Bedrock (Claude 3.5, Amazon Nova), PostgreSQL + pgvector, FastAPI, DeepEval, Ragas, Python
+
+Results: Achieved 92% answer accuracy with source citations; 35% retrieval precision improvement through 
+dual-phase extraction; built evaluation API serving multiple applications
+
+Viral Video Pipeline
+GitHub: https://github.com/devisw0/[your-repo-name]
+Automated TikTok-style short video generation from YouTube content using AI transcription and intelligent 
+clip extraction.
+
+Stack: Python, yt-dlp, faster-whisper, moviepy, ollama, YouTube Data API v3
+
+Results: 80% reduction in manual editing time; automated content discovery and clip extraction pipeline
+
+Magic Mirror
+GitHub: https://github.com/devisw0/Hedra-Avatar-POC/tree/devan-agent-fragerences
+Real-time voice-controlled avatar assistant for fragrance domain Q&A achieving sub-1s end-to-end latency.
+
+Stack: Flask, Angular, LiveKit/WebRTC, LangGraph, OpenAI Realtime, Hedra API, faster-whisper, ElevenLabs
+
+Results: ~1s end-to-end latency; 60% reduction in expert lookup time; deployed for internal office use
 A sophisticated Retrieval-Augmented Generation (RAG) chatbot for analyzing PDF presentation slides using Amazon Nova Multimodal Embeddings and Amazon Titan Text Embeddings. This system performs dual retrieval across both text and visual content, providing comprehensive answers by synthesizing information from multiple modalities.
 
 ## Features
